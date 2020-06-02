@@ -49,6 +49,8 @@ const (
 	sdInstanceAttrIPV4  = "AWS_INSTANCE_IPV4"
 	sdInstanceAttrCname = "AWS_INSTANCE_CNAME"
 	sdInstanceAttrAlias = "AWS_ALIAS_DNS_NAME"
+
+	sdInstanceAttrOwnerID = "external-dns-owner-id"
 )
 
 var (
@@ -81,10 +83,12 @@ type AWSSDProvider struct {
 	namespaceFilter endpoint.DomainFilter
 	// filter namespace by type (private or public)
 	namespaceTypeFilter *sd.NamespaceFilter
+
+	ownerID string
 }
 
 // NewAWSSDProvider initializes a new AWS Cloud Map based Provider.
-func NewAWSSDProvider(domainFilter endpoint.DomainFilter, namespaceType string, assumeRole string, dryRun bool) (*AWSSDProvider, error) {
+func NewAWSSDProvider(domainFilter endpoint.DomainFilter, namespaceType string, assumeRole string, ownerID string, dryRun bool) (*AWSSDProvider, error) {
 	config := aws.NewConfig()
 
 	config = config.WithHTTPClient(
@@ -115,6 +119,7 @@ func NewAWSSDProvider(domainFilter endpoint.DomainFilter, namespaceType string, 
 		client:              sd.New(sess),
 		namespaceFilter:     domainFilter,
 		namespaceTypeFilter: newSdNamespaceFilter(namespaceType),
+		ownerID:             ownerID,
 		dryRun:              dryRun,
 	}
 
@@ -173,7 +178,8 @@ func (p *AWSSDProvider) instancesToEndpoint(ns *sd.NamespaceSummary, srv *sd.Ser
 	recordName := *srv.Name + "." + *ns.Name
 
 	labels := endpoint.NewLabels()
-	labels[endpoint.AWSSDDescriptionLabel] = aws.StringValue(srv.Description)
+	//labels[endpoint.AWSSDDescriptionLabel] = aws.StringValue(srv.Description)
+	labels[endpoint.OwnerLabelKey] = p.ownerID
 
 	newEndpoint := &endpoint.Endpoint{
 		DNSName:   recordName,
@@ -410,7 +416,17 @@ func (p *AWSSDProvider) ListInstancesByServiceID(serviceID *string) ([]*sd.Insta
 	instances := make([]*sd.InstanceSummary, 0)
 
 	f := func(resp *sd.ListInstancesOutput, lastPage bool) bool {
-		instances = append(instances, resp.Instances...)
+		if p.ownerID != "" {
+			for _, inst := range resp.Instances {
+				if inst.Attributes != nil {
+					if attrValue := inst.Attributes[sdInstanceAttrOwnerID]; attrValue != nil && *attrValue == p.ownerID {
+						instances = append(instances, inst)
+					}
+				}
+			}
+		} else {
+			instances = append(instances, resp.Instances...)
+		}
 
 		return true
 	}
@@ -440,7 +456,7 @@ func (p *AWSSDProvider) CreateService(namespaceID *string, srvName *string, ep *
 	if !p.dryRun {
 		out, err := p.client.CreateService(&sd.CreateServiceInput{
 			Name:        srvName,
-			Description: aws.String(ep.Labels[endpoint.AWSSDDescriptionLabel]),
+			//Description: aws.String(ep.Labels[endpoint.AWSSDDescriptionLabel]),
 			DnsConfig: &sd.DnsConfig{
 				RoutingPolicy: aws.String(routingPolicy),
 				DnsRecords: []*sd.DnsRecord{{
@@ -476,7 +492,7 @@ func (p *AWSSDProvider) UpdateService(service *sd.Service, ep *endpoint.Endpoint
 		_, err := p.client.UpdateService(&sd.UpdateServiceInput{
 			Id: service.Id,
 			Service: &sd.ServiceChange{
-				Description: aws.String(ep.Labels[endpoint.AWSSDDescriptionLabel]),
+				//Description: aws.String(ep.Labels[endpoint.AWSSDDescriptionLabel]),
 				DnsConfig: &sd.DnsConfigChange{
 					DnsRecords: []*sd.DnsRecord{{
 						Type: aws.String(srvType),
@@ -508,6 +524,10 @@ func (p *AWSSDProvider) RegisterInstance(service *sd.Service, ep *endpoint.Endpo
 			attr[sdInstanceAttrIPV4] = aws.String(target)
 		} else {
 			return fmt.Errorf("invalid endpoint type (%v)", ep)
+		}
+
+		if p.ownerID != "" {
+			attr[sdInstanceAttrOwnerID] = aws.String(p.ownerID)
 		}
 
 		if !p.dryRun {

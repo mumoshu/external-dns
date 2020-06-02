@@ -51,13 +51,16 @@ func (sdr *AWSSDRegistry) Records(ctx context.Context) ([]*endpoint.Endpoint, er
 	}
 
 	for _, record := range records {
-		labels, err := endpoint.NewLabelsFromString(record.Labels[endpoint.AWSSDDescriptionLabel])
-		if err != nil {
-			// if we fail to parse the output then simply assume the endpoint is not managed by any instance of External DNS
-			record.Labels = endpoint.NewLabels()
-			continue
+		str, exists := record.Labels[endpoint.AWSSDDescriptionLabel]
+		if exists {
+			labels, err := endpoint.NewLabelsFromString(str)
+			if err != nil {
+				// if we fail to parse the output then simply assume the endpoint is not managed by any instance of External DNS
+				record.Labels = endpoint.NewLabels()
+				continue
+			}
+			record.Labels = labels
 		}
-		record.Labels = labels
 	}
 
 	return records, nil
